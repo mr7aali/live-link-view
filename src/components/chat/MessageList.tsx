@@ -7,6 +7,9 @@ export default function MessageList({ messages }: { messages: any[] }) {
           {msg.content}
         </div>
       ))}
+      {messages.length === 0 && (
+        <div className="text-center text-gray-500">No messages yet</div>
+      )}
     </div>
   );
 }

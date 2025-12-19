@@ -1,11 +1,11 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
 import { useEffect, useState } from "react";
 import { useSocketContext } from "@/providers/SocketProvider";
-// import MessageList from "./MessageList";
-import MessageInput from "./MessageInput";
-import TypingIndicator from "./TypingIndicator";
 import MessageList from "./MessageList";
+import TypingIndicator from "./TypingIndicator";
+import MessageInput from "./MessageInput";
 
 export default function ChatWindow({
   conversationId,
@@ -17,6 +17,7 @@ export default function ChatWindow({
   const [typingUser, setTypingUser] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!socketRef) return;
     const socket = socketRef.current;
     if (!socket) return;
 
@@ -39,7 +40,7 @@ export default function ChatWindow({
       socket.off("typing:start");
       socket.off("typing:stop");
     };
-  }, [conversationId]);
+  }, [conversationId, socketRef]);
 
   return (
     <div className="flex flex-col h-screen max-w-md mx-auto border">
