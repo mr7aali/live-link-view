@@ -12,7 +12,8 @@ export default function MessageInput({
   const [text, setText] = useState("");
 
   const sendMessage = () => {
-    if (!text.trim()) return;
+    if (!socketRef) return;
+    if (!text.trim() || !socketRef.current) return;
 
     socketRef.current.emit("message:send", {
       conversationId,
@@ -28,10 +29,14 @@ export default function MessageInput({
       <input
         value={text}
         onChange={(e) => {
+          if (!socketRef) return;
           setText(e.target.value);
-          socketRef.current.emit("typing:start", { conversationId });
+          socketRef.current?.emit("typing:start", { conversationId });
         }}
-        onBlur={() => socketRef.current.emit("typing:stop", { conversationId })}
+        onBlur={() =>
+          socketRef &&
+          socketRef.current?.emit("typing:stop", { conversationId })
+        }
         className="flex-1 border rounded px-2"
         placeholder="Type a message"
       />
