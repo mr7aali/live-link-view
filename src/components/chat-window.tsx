@@ -1,176 +1,240 @@
-"use client"
+"use client";
 
-import type React from "react"
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { User } from "@/lib/api";
+import { messagesApi } from "@/lib/api";
+import { socketService, type MessageReceiveData } from "@/lib/socket";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { X } from "lucide-react";
 
-import { useEffect, useState, useRef } from "react"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { ScrollArea } from "@/components/ui/scroll-area"
-import { Avatar, AvatarFallback } from "@/components/ui/avatar"
-import { X, Send } from "lucide-react"
-import { socketService } from "@/lib/socket"
-import type { User } from "@/lib/api"
+type ChatWindowProps = {
+  token: string;
+  user: User;
+  currentUserId: string;
+  conversationId: string;
+  onClose: () => void;
+};
 
-interface Message {
-  id: string
-  senderId: string
-  message: string
-  timestamp: string
-  isSent: boolean
-}
+type UIMessage = {
+  _id: string;
+  conversationId: string;
+  senderId: string;
+  content: string;
+  createdAt?: string;
+};
 
-interface ChatWindowProps {
-  user: User
-  currentUserId: string
-  onClose: () => void
-}
+export function ChatWindow({
+  token,
+  user,
+  currentUserId,
+  conversationId,
+  onClose,
+}: ChatWindowProps) {
+  const [messages, setMessages] = useState<UIMessage[]>([]);
+  const [text, setText] = useState("");
+  const [otherTyping, setOtherTyping] = useState(false);
+  const [loading, setLoading] = useState(true);
 
-export function ChatWindow({ user, currentUserId, onClose }: ChatWindowProps) {
-  const [messages, setMessages] = useState<Message[]>([])
-  const [inputMessage, setInputMessage] = useState("")
-  const [isTyping, setIsTyping] = useState(false)
-  const scrollAreaRef = useRef<HTMLDivElement>(null)
-  const typingTimeoutRef = useRef<NodeJS.Timeout>()
+  const bottomRef = useRef<HTMLDivElement | null>(null);
+  const typingTimer = useRef<number | null>(null);
+  const typingActive = useRef(false);
+
+  const title = useMemo(() => user.username, [user.username]);
 
   useEffect(() => {
-    const handleMessageReceive = (data: { senderId: string; message: string; timestamp: string }) => {
-      if (data.senderId === user._id) {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: Date.now().toString(),
-            senderId: data.senderId,
-            message: data.message,
-            timestamp: data.timestamp,
-            isSent: false,
-          },
-        ])
-      }
+    let mounted = true;
+
+    async function init() {
+      setLoading(true);
+
+      // 1) join room (required for room broadcast)
+      await socketService.joinConversation(conversationId);
+
+      // 2) load history (optional)
+      const history = await messagesApi.getConversationMessages(
+        token,
+        conversationId
+      );
+      if (!mounted) return;
+
+      setMessages(
+        history.map((m) => ({
+          _id: m._id,
+          conversationId: m.conversationId,
+          senderId: m.senderId,
+          content: m.content,
+          createdAt: m.createdAt,
+        }))
+      );
+
+      setLoading(false);
     }
 
-    const handleTyping = (data: { senderId: string; isTyping: boolean }) => {
-      if (data.senderId === user._id) {
-        setIsTyping(data.isTyping)
-      }
-    }
-
-    socketService.onMessageReceive(handleMessageReceive)
-    socketService.onTyping(handleTyping)
+    init().catch((e) => {
+      console.error("[ChatWindow] init error:", e);
+      setLoading(false);
+    });
 
     return () => {
-      socketService.offMessageReceive()
-      socketService.offTyping()
-    }
-  }, [user._id])
+      mounted = false;
+      socketService.leaveConversation(conversationId);
+      socketService.offChatListeners();
+    };
+  }, [conversationId, token]);
 
   useEffect(() => {
-    if (scrollAreaRef.current) {
-      scrollAreaRef.current.scrollTop = scrollAreaRef.current.scrollHeight
+    socketService.onMessageReceive(async (msg: MessageReceiveData) => {
+      if (msg.conversationId !== conversationId) return;
+
+      setMessages((prev) => [
+        ...prev,
+        {
+          _id: msg._id,
+          conversationId: msg.conversationId,
+          senderId: msg.senderId,
+          content: msg.content,
+          createdAt: msg.createdAt,
+        },
+      ]);
+
+      // ✅ mark read if it's from the other user
+      if (msg.senderId !== currentUserId) {
+        await socketService.markAsRead(conversationId, msg._id);
+      }
+    });
+
+    socketService.onTypingStart((p) => {
+      if (p.conversationId !== conversationId) return;
+      if (p.userId === currentUserId) return;
+      setOtherTyping(true);
+    });
+
+    socketService.onTypingStop((p) => {
+      if (p.conversationId !== conversationId) return;
+      if (p.userId === currentUserId) return;
+      setOtherTyping(false);
+    });
+
+    return () => {
+      socketService.offChatListeners();
+    };
+  }, [conversationId, currentUserId]);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages.length, otherTyping]);
+
+  const handleTyping = (value: string) => {
+    setText(value);
+
+    if (!typingActive.current) {
+      socketService.typingStart(conversationId);
+      typingActive.current = true;
     }
-  }, [messages])
 
-  const handleSendMessage = () => {
-    if (!inputMessage.trim()) return
+    if (typingTimer.current) window.clearTimeout(typingTimer.current);
 
-    const newMessage: Message = {
-      id: Date.now().toString(),
+    typingTimer.current = window.setTimeout(() => {
+      if (typingActive.current) {
+        socketService.typingStop(conversationId);
+        typingActive.current = false;
+      }
+    }, 700);
+  };
+
+  const handleSend = async () => {
+    const content = text.trim();
+    if (!content) return;
+
+    setText("");
+
+    if (typingActive.current) {
+      socketService.typingStop(conversationId);
+      typingActive.current = false;
+    }
+
+    // optimistic UI
+    const optimistic: UIMessage = {
+      _id: crypto.randomUUID(),
+      conversationId,
       senderId: currentUserId,
-      message: inputMessage,
-      timestamp: new Date().toISOString(),
-      isSent: true,
+      content,
+      createdAt: new Date().toISOString(),
+    };
+    setMessages((p) => [...p, optimistic]);
+
+    const res = await socketService.sendMessage(
+      conversationId,
+      content,
+      "text"
+    );
+    if (!res.success) {
+      console.error("[ChatWindow] send failed:", res.error);
     }
-
-    setMessages((prev) => [...prev, newMessage])
-    socketService.sendMessage(user._id, inputMessage)
-    setInputMessage("")
-    socketService.sendTypingStatus(user._id, false)
-  }
-
-  const handleInputChange = (value: string) => {
-    setInputMessage(value)
-
-    if (typingTimeoutRef.current) {
-      clearTimeout(typingTimeoutRef.current)
-    }
-
-    if (value.trim()) {
-      socketService.sendTypingStatus(user._id, true)
-      typingTimeoutRef.current = setTimeout(() => {
-        socketService.sendTypingStatus(user._id, false)
-      }, 1000)
-    } else {
-      socketService.sendTypingStatus(user._id, false)
-    }
-  }
-
-  const handleKeyPress = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault()
-      handleSendMessage()
-    }
-  }
+  };
 
   return (
-    <Card className="w-full max-w-md shadow-lg">
-      <CardHeader className="flex flex-row items-center justify-between py-3 px-4 border-b">
-        <div className="flex items-center gap-3">
-          <Avatar className="h-8 w-8">
-            <AvatarFallback className="text-xs">{user.username[0].toUpperCase()}</AvatarFallback>
-          </Avatar>
-          <CardTitle className="text-base">{user.username}</CardTitle>
+    <div className="w-[360px] h-[520px] bg-background border rounded-2xl shadow-xl overflow-hidden flex flex-col">
+      {/* Header */}
+      <div className="px-4 py-3 border-b flex items-center justify-between">
+        <div>
+          <p className="font-semibold leading-none">{title}</p>
+          <p className="text-xs text-muted-foreground mt-1">
+            {otherTyping ? "typing..." : " "}
+          </p>
         </div>
-        <Button variant="ghost" size="icon" onClick={onClose}>
+
+        <Button size="icon" variant="ghost" onClick={onClose}>
           <X className="h-4 w-4" />
         </Button>
-      </CardHeader>
-      <CardContent className="p-0">
-        <ScrollArea className="h-96 p-4" ref={scrollAreaRef}>
-          <div className="flex flex-col gap-3">
-            {messages.length === 0 ? (
-              <p className="text-center text-sm text-muted-foreground py-8">No messages yet. Start the conversation!</p>
-            ) : (
-              messages.map((msg) => (
-                <div key={msg.id} className={`flex ${msg.isSent ? "justify-end" : "justify-start"}`}>
-                  <div
-                    className={`rounded-lg px-4 py-2 max-w-[75%] ${
-                      msg.isSent ? "bg-primary text-primary-foreground" : "bg-muted"
-                    }`}
-                  >
-                    <p className="text-sm break-words">{msg.message}</p>
-                    <p
-                      className={`text-xs mt-1 ${msg.isSent ? "text-primary-foreground/70" : "text-muted-foreground"}`}
-                    >
-                      {new Date(msg.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                    </p>
+      </div>
+
+      {/* Body */}
+      <div className="flex-1 p-3 overflow-y-auto space-y-2">
+        {loading ? (
+          <p className="text-sm text-muted-foreground">Loading...</p>
+        ) : messages.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No messages yet.</p>
+        ) : (
+          messages.map((m) => {
+            const mine = m.senderId === currentUserId;
+            return (
+              <div
+                key={m._id}
+                className={`flex ${mine ? "justify-end" : "justify-start"}`}
+              >
+                <div
+                  className={`${
+                    mine ? "bg-primary text-primary-foreground" : "bg-muted"
+                  } max-w-[78%] rounded-2xl px-3 py-2 text-sm`}
+                >
+                  {m.content}
+                  <div className="text-[10px] opacity-70 mt-1">
+                    {m.createdAt
+                      ? new Date(m.createdAt).toLocaleTimeString()
+                      : ""}
                   </div>
                 </div>
-              ))
-            )}
-            {isTyping && (
-              <div className="flex justify-start">
-                <div className="bg-muted rounded-lg px-4 py-2">
-                  <p className="text-sm text-muted-foreground italic">typing...</p>
-                </div>
               </div>
-            )}
-          </div>
-        </ScrollArea>
-        <div className="border-t p-3">
-          <div className="flex gap-2">
-            <Input
-              placeholder="Type a message..."
-              value={inputMessage}
-              onChange={(e) => handleInputChange(e.target.value)}
-              onKeyDown={handleKeyPress}
-              className="flex-1"
-            />
-            <Button onClick={handleSendMessage} size="icon" disabled={!inputMessage.trim()}>
-              <Send className="h-4 w-4" />
-            </Button>
-          </div>
-        </div>
-      </CardContent>
-    </Card>
-  )
+            );
+          })
+        )}
+        <div ref={bottomRef} />
+      </div>
+
+      {/* Composer */}
+      <div className="p-3 border-t flex gap-2">
+        <Input
+          value={text}
+          onChange={(e) => handleTyping(e.target.value)}
+          placeholder="Type a message..."
+          onKeyDown={(e) => {
+            if (e.key === "Enter") handleSend();
+          }}
+        />
+        <Button onClick={handleSend}>Send</Button>
+      </div>
+    </div>
+  );
 }

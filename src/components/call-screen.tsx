@@ -1,19 +1,19 @@
-"use client"
+"use client";
 
-import type React from "react"
+import type React from "react";
 
-import { Button } from "@/components/ui/button"
-import { Card } from "@/components/ui/card"
-import { PhoneOff, Mic, MicOff, Video, VideoOff } from "lucide-react"
-import { useState } from "react"
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { PhoneOff, Mic, MicOff, Video, VideoOff } from "lucide-react";
+import { useState } from "react";
 
 interface CallScreenProps {
-  localVideoRef: React.RefObject<HTMLVideoElement>
-  remoteVideoRef: React.RefObject<HTMLVideoElement>
-  callType: "audio" | "video"
-  onEndCall: () => void
-  onToggleVideo: () => void
-  onToggleAudio: () => void
+  localVideoRef: React.RefObject<HTMLVideoElement> | any;
+  remoteVideoRef: React.RefObject<HTMLVideoElement> | any;
+  callType: "audio" | "video";
+  onEndCall: () => void;
+  onToggleVideo: () => void;
+  onToggleAudio: () => void;
 }
 
 export function CallScreen({
@@ -24,27 +24,38 @@ export function CallScreen({
   onToggleVideo,
   onToggleAudio,
 }: CallScreenProps) {
-  const [videoEnabled, setVideoEnabled] = useState(true)
-  const [audioEnabled, setAudioEnabled] = useState(true)
+  const [videoEnabled, setVideoEnabled] = useState(true);
+  const [audioEnabled, setAudioEnabled] = useState(true);
 
   const handleToggleVideo = () => {
-    setVideoEnabled(!videoEnabled)
-    onToggleVideo()
-  }
+    setVideoEnabled(!videoEnabled);
+    onToggleVideo();
+  };
 
   const handleToggleAudio = () => {
-    setAudioEnabled(!audioEnabled)
-    onToggleAudio()
-  }
+    setAudioEnabled(!audioEnabled);
+    onToggleAudio();
+  };
 
   return (
     <div className="fixed inset-0 z-50 bg-background flex flex-col">
       <div className="flex-1 relative bg-muted">
         {callType === "video" ? (
           <>
-            <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-cover" />
+            <video
+              ref={remoteVideoRef}
+              autoPlay
+              playsInline
+              className="w-full h-full object-cover"
+            />
             <Card className="absolute bottom-4 right-4 w-48 h-36 overflow-hidden">
-              <video ref={localVideoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
+              <video
+                ref={localVideoRef}
+                autoPlay
+                playsInline
+                muted
+                className="w-full h-full object-cover"
+              />
             </Card>
           </>
         ) : (
@@ -66,7 +77,11 @@ export function CallScreen({
           onClick={handleToggleAudio}
           className="rounded-full h-14 w-14"
         >
-          {audioEnabled ? <Mic className="h-5 w-5" /> : <MicOff className="h-5 w-5" />}
+          {audioEnabled ? (
+            <Mic className="h-5 w-5" />
+          ) : (
+            <MicOff className="h-5 w-5" />
+          )}
         </Button>
 
         {callType === "video" && (
@@ -76,14 +91,23 @@ export function CallScreen({
             onClick={handleToggleVideo}
             className="rounded-full h-14 w-14"
           >
-            {videoEnabled ? <Video className="h-5 w-5" /> : <VideoOff className="h-5 w-5" />}
+            {videoEnabled ? (
+              <Video className="h-5 w-5" />
+            ) : (
+              <VideoOff className="h-5 w-5" />
+            )}
           </Button>
         )}
 
-        <Button size="lg" variant="destructive" onClick={onEndCall} className="rounded-full h-14 w-14">
+        <Button
+          size="lg"
+          variant="destructive"
+          onClick={onEndCall}
+          className="rounded-full h-14 w-14"
+        >
           <PhoneOff className="h-5 w-5" />
         </Button>
       </div>
     </div>
-  )
+  );
 }

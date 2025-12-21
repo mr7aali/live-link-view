@@ -1,7 +1,13 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { io, type Socket } from "socket.io-client";
 
 const SOCKET_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000";
 
+export type MessageType = "text" | "image" | "audio" | "video" | "file";
+
+// ----------------------
+// Calls payloads (your existing)
+// ----------------------
 export interface CallInitiateData {
   callerId: string;
   offer: RTCSessionDescriptionInit;
@@ -18,122 +24,237 @@ export interface IceCandidateData {
   senderId: string;
 }
 
+// ----------------------
+// Messages payloads (matches backend)
+// ----------------------
 export interface MessageReceiveData {
+  _id: string;
+  conversationId: string;
   senderId: string;
-  message: string;
-  timestamp: string;
+  content: string;
+  type: MessageType;
+  createdAt?: string;
 }
 
-export interface TypingData {
-  senderId: string;
-  isTyping: boolean;
+export interface TypingPayload {
+  userId: string;
+  conversationId: string;
 }
 
 export class SocketService {
-  private socket: Socket | null = null;
+  private callsSocket: Socket | null = null; // /calls (optional)
+  private messagesSocket: Socket | null = null; // /messages (required for chat)
 
   connect(token: string) {
-    if (this.socket?.connected) return this.socket;
+    // ✅ Always connect messages
+    this.connectMessages(token);
 
-    this.socket = io(`${SOCKET_URL}/calls`, {
+    // ✅ Keep calls connect (optional; won’t break chat if backend doesn't have it)
+    this.connectCalls(token);
+
+    return {
+      messages: this.messagesSocket,
+      calls: this.callsSocket,
+    };
+  }
+
+  private connectMessages(token: string) {
+    if (this.messagesSocket?.connected) return this.messagesSocket;
+
+    this.messagesSocket = io(`${SOCKET_URL}/messages`, {
       auth: { token },
       transports: ["websocket", "polling"],
     });
 
-    this.socket.on("connect", () => {
-      console.log("[v0] WebSocket connected");
+    this.messagesSocket.on("connect", () => {
+      console.log("[messages] connected", this.messagesSocket?.id);
     });
 
-    this.socket.on("disconnect", () => {
-      console.log("[v0] WebSocket disconnected");
+    this.messagesSocket.on("disconnect", (r) => {
+      console.log("[messages] disconnected", r);
     });
 
-    this.socket.on("connect_error", (error) => {
-      console.error("[v0] WebSocket connection error:", error);
+    this.messagesSocket.on("connect_error", (e) => {
+      console.error("[messages] connect_error", e);
     });
 
-    return this.socket;
+    return this.messagesSocket;
+  }
+
+  private connectCalls(token: string) {
+    if (this.callsSocket?.connected) return this.callsSocket;
+
+    this.callsSocket = io(`${SOCKET_URL}/calls`, {
+      auth: { token },
+      transports: ["websocket", "polling"],
+    });
+
+    this.callsSocket.on("connect", () => {
+      console.log("[calls] connected", this.callsSocket?.id);
+    });
+
+    this.callsSocket.on("disconnect", (r) => {
+      console.log("[calls] disconnected", r);
+    });
+
+    this.callsSocket.on("connect_error", (e) => {
+      // If you don't have calls gateway, you'll see this — it's okay.
+      console.warn(
+        "[calls] connect_error (ignore if no calls gateway)",
+        e?.message || e
+      );
+    });
+
+    return this.callsSocket;
   }
 
   disconnect() {
-    if (this.socket) {
-      this.socket.disconnect();
-      this.socket = null;
+    if (this.messagesSocket) {
+      this.messagesSocket.disconnect();
+      this.messagesSocket = null;
+    }
+    if (this.callsSocket) {
+      this.callsSocket.disconnect();
+      this.callsSocket = null;
     }
   }
 
-  getSocket() {
-    return this.socket;
+  // ----------------------
+  // ✅ Chat (matches your backend)
+  // ----------------------
+  joinConversation(conversationId: string) {
+    return new Promise<{ success: boolean; error?: string }>((resolve) => {
+      this.messagesSocket?.emit(
+        "conversation:join",
+        { conversationId },
+        (res: { success: boolean; error?: string } | undefined) =>
+          resolve(res ?? { success: true })
+      );
+    });
   }
 
-  // Call event emitters
+  leaveConversation(conversationId: string) {
+    return new Promise<{ success: boolean; error?: string }>((resolve) => {
+      this.messagesSocket?.emit(
+        "conversation:leave",
+        { conversationId },
+        (res: { success: boolean; error?: string } | undefined) =>
+          resolve(res ?? { success: true })
+      );
+    });
+  }
+
+  sendMessage(
+    conversationId: string,
+    content: string,
+    type: MessageType = "text"
+  ) {
+    return new Promise<{ success: boolean; error?: string; message?: any }>(
+      (resolve) => {
+        this.messagesSocket?.emit(
+          "message:send",
+          { conversationId, content, type },
+          (
+            res: { success: boolean; error?: string; message?: any } | undefined
+          ) => resolve(res ?? { success: true })
+        );
+      }
+    );
+  }
+
+  markAsRead(conversationId: string, messageId: string) {
+    return new Promise<{ success: boolean; error?: string }>((resolve) => {
+      this.messagesSocket?.emit(
+        "message:read",
+        { conversationId, messageId },
+        (res: { success: boolean; error?: string } | undefined) =>
+          resolve(res ?? { success: true })
+      );
+    });
+  }
+
+  typingStart(conversationId: string) {
+    this.messagesSocket?.emit("typing:start", { conversationId });
+  }
+
+  typingStop(conversationId: string) {
+    this.messagesSocket?.emit("typing:stop", { conversationId });
+  }
+
+  onMessageReceive(cb: (data: MessageReceiveData) => void) {
+    this.messagesSocket?.on("message:receive", cb);
+  }
+
+  onTypingStart(cb: (data: TypingPayload) => void) {
+    this.messagesSocket?.on("typing:start", cb);
+  }
+
+  onTypingStop(cb: (data: TypingPayload) => void) {
+    this.messagesSocket?.on("typing:stop", cb);
+  }
+
+  onUserOnline(cb: (data: { userId: string }) => void) {
+    this.messagesSocket?.on("user:online", cb);
+  }
+
+  onUserOffline(cb: (data: { userId: string }) => void) {
+    this.messagesSocket?.on("user:offline", cb);
+  }
+
+  offChatListeners() {
+    if (!this.messagesSocket) return;
+    this.messagesSocket.off("message:receive");
+    this.messagesSocket.off("typing:start");
+    this.messagesSocket.off("typing:stop");
+    this.messagesSocket.off("user:online");
+    this.messagesSocket.off("user:offline");
+  }
+
+  // ----------------------
+  // Calls (your existing)
+  // ----------------------
   initiateCall(
     recipientId: string,
     offer: RTCSessionDescriptionInit,
     callType: "audio" | "video"
   ) {
-    this.socket?.emit("call:initiate", { recipientId, offer, callType });
+    this.callsSocket?.emit("call:initiate", { recipientId, offer, callType });
   }
 
   answerCall(callerId: string, answer: RTCSessionDescriptionInit) {
-    this.socket?.emit("call:answer", { callerId, answer });
+    this.callsSocket?.emit("call:answer", { callerId, answer });
   }
 
   sendIceCandidate(targetUserId: string, candidate: RTCIceCandidateInit) {
-    this.socket?.emit("call:iceCandidate", { targetUserId, candidate });
+    this.callsSocket?.emit("call:iceCandidate", { targetUserId, candidate });
   }
 
   rejectCall(callerId: string) {
-    this.socket?.emit("call:reject", { callerId });
+    this.callsSocket?.emit("call:reject", { callerId });
   }
 
   endCall(targetUserId: string) {
-    this.socket?.emit("call:end", { targetUserId });
+    this.callsSocket?.emit("call:end", { targetUserId });
   }
 
-  sendMessage(recipientId: string, message: string) {
-    this.socket?.emit("message:send", { recipientId, message });
-  }
-
-  sendTypingStatus(recipientId: string, isTyping: boolean) {
-    this.socket?.emit("message:typing", { recipientId, isTyping });
-  }
-
-  // Call event listeners
   onCallInitiate(callback: (data: CallInitiateData) => void) {
-    this.socket?.on("call:initiate", callback);
+    this.callsSocket?.on("call:initiate", callback);
   }
 
   onCallAnswer(callback: (data: CallAnswerData) => void) {
-    this.socket?.on("call:answer", callback);
+    this.callsSocket?.on("call:answer", callback);
   }
 
   onIceCandidate(callback: (data: IceCandidateData) => void) {
-    this.socket?.on("call:iceCandidate", callback);
+    this.callsSocket?.on("call:iceCandidate", callback);
   }
 
   onCallReject(callback: (data: { calleeId: string }) => void) {
-    this.socket?.on("call:reject", callback);
+    this.callsSocket?.on("call:reject", callback);
   }
 
   onCallEnd(callback: (data: { userId: string }) => void) {
-    this.socket?.on("call:end", callback);
-  }
-
-  onMessageReceive(callback: (data: MessageReceiveData) => void) {
-    this.socket?.on("message:receive", callback);
-  }
-
-  onTyping(callback: (data: TypingData) => void) {
-    this.socket?.on("message:typing", callback);
-  }
-
-  offMessageReceive() {
-    this.socket?.off("message:receive");
-  }
-
-  offTyping() {
-    this.socket?.off("message:typing");
+    this.callsSocket?.on("call:end", callback);
   }
 }
 

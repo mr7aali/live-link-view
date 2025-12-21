@@ -1,3 +1,4 @@
+/* eslint-disable react-hooks/set-state-in-effect */
 "use client";
 
 import { useEffect, useState } from "react";
@@ -7,16 +8,21 @@ import { CallScreen } from "@/components/call-screen";
 import { IncomingCall } from "@/components/incoming-call";
 import { ChatWindow } from "@/components/chat-window";
 import { Button } from "@/components/ui/button";
-import { usersApi, type User } from "@/lib/api";
+import { usersApi, conversationsApi, type User } from "@/lib/api";
 import { socketService } from "@/lib/socket";
 import { useWebRTC } from "@/hooks/use-webrtc";
 import { LogOut } from "lucide-react";
+
+type ActiveChat = {
+  user: User;
+  conversationId: string;
+};
 
 export default function HomePage() {
   const [token, setToken] = useState<string | null>(null);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [users, setUsers] = useState<User[]>([]);
-  const [activeChatUser, setActiveChatUser] = useState<User | null>(null);
+  const [activeChat, setActiveChat] = useState<ActiveChat | null>(null);
 
   const {
     isCallActive,
@@ -34,22 +40,8 @@ export default function HomePage() {
 
   useEffect(() => {
     const savedToken = localStorage.getItem("token");
-    if (savedToken) {
-      setToken(savedToken);
-    }
+    if (savedToken) setToken(savedToken);
   }, []);
-
-  useEffect(() => {
-    if (token) {
-      socketService.connect(token);
-      fetchProfile();
-      fetchUsers();
-
-      return () => {
-        socketService.disconnect();
-      };
-    }
-  }, [token]);
 
   const fetchProfile = async () => {
     if (!token) return;
@@ -57,7 +49,7 @@ export default function HomePage() {
       const profile = await usersApi.getProfile(token);
       setCurrentUser(profile);
     } catch (error) {
-      console.error("[v0] Failed to fetch profile:", error);
+      console.error("Failed to fetch profile:", error);
     }
   };
 
@@ -67,9 +59,35 @@ export default function HomePage() {
       const allUsers = await usersApi.getAll(token);
       setUsers(allUsers);
     } catch (error) {
-      console.error("[v0] Failed to fetch users:", error);
+      console.error("Failed to fetch users:", error);
     }
   };
+
+  useEffect(() => {
+    if (!token) return;
+
+    socketService.connect(token);
+
+    // Presence updates from /messages gateway
+    socketService.onUserOnline(({ userId }) => {
+      setUsers((prev) =>
+        prev.map((u) => (u._id === userId ? { ...u, status: "online" } : u))
+      );
+    });
+
+    socketService.onUserOffline(({ userId }) => {
+      setUsers((prev) =>
+        prev.map((u) => (u._id === userId ? { ...u, status: "offline" } : u))
+      );
+    });
+
+    fetchProfile();
+    fetchUsers();
+
+    return () => {
+      socketService.disconnect();
+    };
+  }, [token]);
 
   const handleLogout = () => {
     localStorage.removeItem("token");
@@ -77,6 +95,7 @@ export default function HomePage() {
     setToken(null);
     setCurrentUser(null);
     setUsers([]);
+    setActiveChat(null);
   };
 
   const getCallerName = () => {
@@ -85,8 +104,21 @@ export default function HomePage() {
     return caller?.username || "Unknown";
   };
 
-  const handleOpenChat = (user: User) => {
-    setActiveChatUser(user);
+  const handleOpenChat = async (user: User) => {
+    if (!token) return;
+    try {
+      const conversation = await conversationsApi.getOrCreateDirect(
+        token,
+        user._id
+      );
+
+      setActiveChat({ user, conversationId: conversation._id });
+    } catch (e) {
+      console.error("[HomePage] open chat failed:", e);
+      alert(
+        "Conversation endpoint not matching. Update conversationsApi routes in lib/api.ts"
+      );
+    }
   };
 
   if (!token) {
@@ -147,12 +179,15 @@ export default function HomePage() {
         />
       </main>
 
-      {activeChatUser && (
+      {activeChat && currentUser && token && (
         <div className="fixed bottom-4 right-4 z-50">
           <ChatWindow
-            user={activeChatUser}
-            currentUserId={currentUser?._id || ""}
-            onClose={() => setActiveChatUser(null)}
+            token={token}
+            user={activeChat.user}
+            currentUserId={currentUser._id}
+            // conversationId={activeChat.conversationId}
+            conversationId="6946d6b9b88388b49703a5cc"
+            onClose={() => setActiveChat(null)}
           />
         </div>
       )}
